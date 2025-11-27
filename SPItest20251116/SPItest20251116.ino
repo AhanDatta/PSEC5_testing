@@ -27,12 +27,12 @@ void setup() {
   
   // Initialize CS pin
   pinMode(CS_PIN, OUTPUT);
-  digitalWrite(CS_PIN, HIGH);  // Start LOW (0V)
+  digitalWrite(CS_PIN, LOW);  // Start LOW (idle state)
   
   // Initialize SPI
   SPI.begin();
   SPI.setClockDivider(SPI_CLOCK_DIV2);  // ~8MHz on 16MHz Nano
-  SPI.setDataMode(SPI_MODE3);  // SPI Mode 3 (matching original spi.format(16, 3))
+  SPI.setDataMode(SPI_MODE0);  // SPI Mode 0 (clock idles LOW)
   SPI.setBitOrder(MSBFIRST);
   
   MyReset();
@@ -41,9 +41,9 @@ void setup() {
 void MyReset() {
   //Sends a 1ms high pulse on the Chip Select. This is connected to SRST to serve as an Active-High external reset.
   Serial.println("SPI Reset");
-  digitalWrite(CS_PIN, LOW);  // Drive the CS HIGH.
-  delay(1);
   digitalWrite(CS_PIN, HIGH);  // Drive the CS LOW.
+  delay(1);
+  digitalWrite(CS_PIN, LOW);  // Drive the CS HIGH.
   delay(1);
 }
 
@@ -157,7 +157,14 @@ void loop() {
   Serial.println("Enter '0' to send an external reset.");
   Serial.println("Enter '1' to send a hexadecimal command.");
   Serial.println("Enter '2' to set up cycling through commands.");
+  Serial.println("Press Enter to finish command.");
+  
+  // Wait for user input before proceeding
+  while (Serial.available() == 0) {
+    // Block here until user sends something
+  }
   String cmd = Serial.readStringUntil('\n');
+  
   if (String(cmd) == "0") {
     MyReset();
   } else if (String(cmd) == "1") {
@@ -179,5 +186,6 @@ void loop() {
     Serial.println("Start Cycling---");
     MyCyclingCommand();
   }
-  delay(5000);
+  
+  // No delay here - loop waits for next command input
 }
