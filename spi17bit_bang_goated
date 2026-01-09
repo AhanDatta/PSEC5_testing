@@ -1,0 +1,225 @@
+/*
+ * 17-Bit SPI-Like Bit-Bang Protocol for Portenta H7
+ *
+ * Added:
+ *   - "reset" serial command
+ *   - Active-HIGH reset pulse on RESET_PIN (1 ms)
+ */
+
+#include <Arduino.h>
+
+// ============================================================
+// Pin definitions (STM32 port names – Portenta H7)
+// ============================================================
+const PinName MOSI_PIN  = PC_3;
+const PinName MISO_PIN  = PC_2;
+const PinName SCK_PIN   = PI_1;
+const PinName RESET_PIN = PC_0;   // <-- CHANGE if SRST is on a different pin
+
+// Timing
+const unsigned int HALF_CLOCK_US = 1;  // Clock half-period (µs)
+
+// ============================================================
+// Function prototypes
+// ============================================================
+void initPins();
+void clockHigh();
+void clockLow();
+void clockPulse();
+void setMOSI(uint8_t bit);
+uint8_t readMISO();
+void idleClocks(uint8_t count);
+uint16_t doTransaction(uint16_t value);
+void parseCommand(String cmd);
+uint16_t parseHex(String s);
+void MyReset();
+
+// ============================================================
+// Arduino entry points
+// ============================================================
+void setup() {
+    Serial.begin(115200);
+    while (!Serial) { /* wait for USB serial */ }
+
+    initPins();
+
+    Serial.println();
+    Serial.println("===========================================");
+    Serial.println(" 17-Bit SPI-Like Protocol Interface");
+    Serial.println(" Portenta H7 Bit-Bang Implementation");
+    Serial.println("===========================================");
+    Serial.println();
+    Serial.println("Pins:");
+    Serial.println("  MOSI : PC_3");
+    Serial.println("  MISO : PC_2");
+    Serial.println("  SCK  : PI_1");
+    Serial.println("  RESET: PC_0 (active HIGH)");
+    Serial.println();
+    Serial.println("Commands:");
+    Serial.println("  w <hex>   - Write 16-bit value");
+    Serial.println("  r <hex>   - Read 16-bit value");
+    Serial.println("  reset    - Send reset pulse");
+    Serial.println();
+    Serial.print("> ");
+}
+
+void loop() {
+    if (Serial.available()) {
+        String command = Serial.readStringUntil('\n');
+        command.trim();
+
+        if (command.length() > 0) {
+            Serial.println(command);  // Echo
+            parseCommand(command);
+        }
+        Serial.print("> ");
+    }
+}
+
+// ============================================================
+// Pin Initialization
+// ============================================================
+void initPins() {
+    pinMode(MOSI_PIN, OUTPUT);
+    pinMode(MISO_PIN, INPUT);
+    pinMode(SCK_PIN, OUTPUT);
+    pinMode(RESET_PIN, OUTPUT);
+
+    digitalWrite(SCK_PIN, LOW);
+    digitalWrite(MOSI_PIN, LOW);
+    digitalWrite(RESET_PIN, LOW); // idle reset LOW
+}
+
+// ============================================================
+// Reset pulse (same behavior as reference sketch)
+// ============================================================
+void MyReset() {
+    Serial.println("  Reset pulse (RESET HIGH for 1 ms)");
+    digitalWrite(RESET_PIN, HIGH);
+    delay(1);
+    digitalWrite(RESET_PIN, LOW);
+    delay(1);
+}
+
+// ============================================================
+// Low-level SPI helpers
+// ============================================================
+inline void clockHigh() {
+    digitalWrite(SCK_PIN, HIGH);
+    delayMicroseconds(HALF_CLOCK_US);
+}
+
+inline void clockLow() {
+    digitalWrite(SCK_PIN, LOW);
+    delayMicroseconds(HALF_CLOCK_US);
+}
+
+inline void clockPulse() {
+    clockHigh();
+    clockLow();
+}
+
+inline void setMOSI(uint8_t bit) {
+    digitalWrite(MOSI_PIN, bit & 0x01);
+}
+
+inline uint8_t readMISO() {
+    return digitalRead(MISO_PIN) ? 1 : 0;
+}
+
+void idleClocks(uint8_t count) {
+    setMOSI(0);
+    for (uint8_t i = 0; i < count; i++) {
+        clockPulse();
+    }
+}
+
+// ============================================================
+// 17-bit transaction
+// ============================================================
+uint16_t doTransaction(uint16_t value) {
+    uint16_t misoCapture = 0;
+    uint8_t lastBit = 0;
+
+    for (int8_t i = 15; i >= 0; i--) {
+        uint8_t bit = (value >> i) & 0x01;
+        setMOSI(bit);
+        clockHigh();
+        misoCapture = (misoCapture << 1) | readMISO();
+        clockLow();
+        lastBit = bit;
+    }
+
+    // 17th clock: repeat LSB
+    setMOSI(lastBit);
+    clockHigh();
+    uint8_t repeatedMISO = readMISO();
+    clockLow();
+
+    if (repeatedMISO != (misoCapture & 0x01)) {
+        Serial.println("  Note: MISO bit 17 differs from bit 16");
+    }
+
+    idleClocks(10);
+    return misoCapture;
+}
+
+// ============================================================
+// Command Parsing
+// ============================================================
+uint16_t parseHex(String s) {
+    uint16_t value = 0;
+    for (unsigned int i = 0; i < s.length(); i++) {
+        char c = s.charAt(i);
+        uint8_t nibble;
+        if (c >= '0' && c <= '9') nibble = c - '0';
+        else if (c >= 'a' && c <= 'f') nibble = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') nibble = c - 'A' + 10;
+        else continue;
+        value = (value << 4) | nibble;
+    }
+    return value;
+}
+
+void parseCommand(String cmd) {
+    cmd.trim();
+    cmd.toLowerCase();
+
+    // ---- RESET COMMAND ----
+    if (cmd == "reset") {
+        MyReset();
+        Serial.println("  Done.");
+        return;
+    }
+
+    if (cmd.length() < 2) {
+        Serial.println("Error: Command too short");
+        return;
+    }
+
+    char op = cmd.charAt(0);
+    String args = cmd.substring(1);
+    args.trim();
+
+    if (args.length() == 0 || args.length() > 4) {
+        Serial.println("Error: Hex value must be 1–4 digits");
+        return;
+    }
+
+    uint16_t value = parseHex(args);
+
+    if (op == 'w' || op == 'r') {
+        Serial.print("  ");
+        Serial.print(op == 'w' ? "Write: " : "Read:  ");
+        Serial.print("0x");
+        Serial.println(value, HEX);
+
+        uint16_t response = doTransaction(value);
+
+        Serial.print("  MISO: 0x");
+        Serial.println(response, HEX);
+        Serial.println("  Done.");
+    } else {
+        Serial.println("Error: Unknown command");
+    }
+}
